@@ -7,7 +7,7 @@ logging.basicConfig(level=logging.INFO)
 BASE_DIR = pathlib.Path(__file__).parent
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
-# ===== Background refresher (runs collect.py every N minutes) =====
+# ===== Background refresher =====
 REFRESH_MIN = int(os.getenv("FEED_REFRESH_MIN", "30"))
 _started_refresher = False
 
@@ -105,7 +105,7 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
     </main>
   </div>
 
-  <!-- Inline fight song playback with range-friendly endpoint -->
+  <!-- Inline fight song playback -->
   <audio id="fightAudio" preload="metadata" playsinline webkit-playsinline>
     <source src="{{ fight_song_src }}" type="audio/mpeg">
   </audio>
@@ -114,73 +114,25 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
 
   <script>
   (function(){
-    const sel=document.getElementById('sourceFilter');
-    const list=document.getElementById('itemsList');
-    const note=document.getElementById('countNote');
-    const search=document.getElementById('search');
-    function applyFilter(){
-      if(!list)return;
-      const srcVal=sel.value, q=(search.value||"").toLowerCase();
-      let shown=0;
-      for(const li of list.querySelectorAll('.item')){
-        const src=li.getAttribute('data-source')||'';
-        const text=li.textContent.toLowerCase();
-        const on=((srcVal==='__all__')||(src===srcVal)) && (!q || text.includes(q));
-        li.style.display=on?'':'none'; if(on) shown++;
-      }
-      note.textContent=`${shown} shown`;
-    }
-    sel&&sel.addEventListener('change',applyFilter);
-    search&&search.addEventListener('input',applyFilter);
-    applyFilter();
-
     const btn=document.getElementById('fightBtn');
     const audio=document.getElementById('fightAudio');
     const toastEl=document.getElementById('toast');
-
     function toast(msg){
       if(!toastEl) return;
       toastEl.textContent=msg; toastEl.style.display='';
       setTimeout(()=>{toastEl.style.display='none'}, 2600);
     }
-
     if(btn&&audio){
       btn.addEventListener('click', ()=>{
+        if (audio.readyState < 1) { try { audio.load(); } catch(_){} }
         if(audio.paused){
           audio.play().then(()=>{ btn.textContent='⏸︎ Pause'; })
-          .catch(()=>{ toast('Could not play audio. Check fight_song.mp3.'); });
+          .catch(()=>{ toast('Could not play fight_song.mp3'); });
         }else{
           audio.pause(); btn.textContent='▶︎ Fight Song';
         }
       });
     }
-
-    const stamp = document.getElementById('updatedStamp');
-    function humanize(iso){
-      if(!iso) return "never";
-      const t=new Date(iso), now=new Date(), diff=Math.max(0,(now-t)/1000);
-      const units=[["day",86400],["hour",3600],["minute",60],["second",1]];
-      for(const [n,s] of units){ if(diff>=s){ const v=Math.floor(diff/s); return v+" "+n+(v>1?"s":"")+" ago"; } }
-      return "just now";
-    }
-    if(stamp){
-      const iso=stamp.getAttribute('data-iso');
-      stamp.textContent="Updated: "+humanize(iso);
-      setInterval(()=>{ stamp.textContent="Updated: "+humanize(iso); }, 30000);
-    }
-    const notice=document.getElementById('notice');
-    const refreshBtn=document.getElementById('refreshBtn');
-    let lastIso=stamp?stamp.getAttribute('data-iso'):null;
-    async function checkForNew(){
-      try{
-        const r=await fetch('/items.json',{method:'HEAD',cache:'no-store'});
-        const lm=r.headers.get('Last-Modified');
-        const newIso=lm?new Date(lm).toISOString():null;
-        if(lastIso && newIso && new Date(newIso)>new Date(lastIso)){ notice.style.display=''; }
-      }catch(_){}
-    }
-    refreshBtn&&refreshBtn.addEventListener('click',()=>location.reload());
-    setInterval(checkForNew, 5*60*1000);
   })();
   </script>
 </body></html>
@@ -190,12 +142,10 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
 def load_items():
     p = BASE_DIR / "items.json"
     if not p.exists():
-        app.logger.info("items.json not found — using empty list")
         return []
     try:
         raw = json.loads(p.read_text(encoding="utf-8"))
     except Exception:
-        app.logger.exception("Failed to parse items.json — using empty list")
         return []
     raw_items = raw.get("items", raw) if isinstance(raw, (dict, list)) else []
     out=[]
@@ -217,7 +167,6 @@ def quick_links():
     except Exception:
         return []
 
-# Use the new media route for fight song source
 def fight_song_src():
     return url_for("fight_song_file")
 
@@ -250,13 +199,12 @@ def _kick_refresher():
 @app.get("/")
 def index():
     items = load_items()
-    item_sources = {it["source"] for it in items if it.get("source")}
     try:
         from feeds import FEEDS_META
         configured_sources = {f["name"] for f in FEEDS_META}
     except Exception:
         configured_sources = set()
-    sources = sorted(item_sources | configured_sources)
+    sources = sorted({it["source"] for it in items if it.get("source")} | configured_sources)
 
     try:
         return render_template(
@@ -292,13 +240,13 @@ def items_json():
         return send_file(p, mimetype="application/json", conditional=True)
     return jsonify({"items": []})
 
-# -------- MP3 with Range support (iOS-friendly) --------
-@app.get("/media/fight_song.mp3")
+# -------- Fight song from ROOT --------
+@app.get("/fight_song.mp3")
 def fight_song_file():
-    path = BASE_DIR / "static" / "fight_song.mp3"
+    path = BASE_DIR / "fight_song.mp3"  # root-level file
     if not path.exists():
+        app.logger.warning("fight_song.mp3 not found at %s", path)
         return ("", 404)
-    # Werkzeug honors Range when conditional=True; we also advertise it.
     resp = send_file(path, mimetype="audio/mpeg", conditional=True)
     resp.headers["Accept-Ranges"] = "bytes"
     resp.headers["Cache-Control"] = "public, max-age=604800"
