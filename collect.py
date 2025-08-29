@@ -1,11 +1,4 @@
-"""
-collect.py — Penn State Football collector.
-- Strictly filters to PSU football and blocks other sports.
-- For Reddit r/CFB, require PSU match in TITLE to avoid generic threads.
-- For YouTube (if added), includes channel tags and a short, capped HTML peek.
-- Newest-first ordering with a simple relevance score.
-"""
-
+# collect.py — Penn State Football collector (strict)
 from pathlib import Path
 import time, json, re
 from html import unescape
@@ -17,39 +10,55 @@ OUT_FILE = Path("items.json")
 MAX_PER_FEED          = 60
 TOTAL_MAX             = 500
 TIMEOUT               = 15
-UA                    = "Mozilla/5.0 (X11; Linux x86_64) PSUFeedBot/1.0 (+https://example.local)"
+UA                    = "Mozilla/5.0 (X11; Linux x86_64) PSUFeedBot/1.1 (+https://example.local)"
 YT_PEEK_TIMEOUT       = 4
-YT_PEEK_MAX_PER_FEED  = 8
+YT_PEEK_MAX_PER_FEED  = 6
 
-# PSU-specific tokens (require at least one)
+# PSU + football language (positive signals)
 PSU_CORE = [
-    "penn state", "nittany lions", "we are", "happy valley", "beaver stadium",
-    "james franklin",
-    "quarterback", "qb", "wide receiver", "running back", "offensive line", "defensive line",
-    "linebacker", "safety", "cornerback", "kicker", "punter",
+    "penn state","nittany lions","we are","happy valley","beaver stadium",
+    "james franklin","drew allar","nick singleton","kaytron allen","abdul carter",
+    "defense","offense","special teams",
+    "football","qb","quarterback","wr","wide receiver","rb","running back",
+    "te","tight end","ol","offensive line","dl","defensive line","edge",
+    "lb","linebacker","db","defensive back","safety","cornerback",
+    "kicker","punter","recruit","commit","portal","spring game","depth chart",
 ]
 PSU_CORE = [t.lower() for t in PSU_CORE]
-EXC = [k.lower() for k in KEYWORDS_EXCLUDE]
+EXC = [k.lower() for k in KEYWORDS_EXCLUDE] + [
+    # ban non-football sports explicitly
+    "basketball","wbb","mbb","volleyball","wrestling","baseball","softball",
+    "soccer","hockey","golf","track","cross country","xc","lacrosse","gymnastics",
+    # generic betting spam
+    "odds","parlay","props","fanduel","draftkings","promo code",
+]
 
 def _contains_any(text: str, tokens) -> bool:
     t = text.lower()
     return any(tok in t for tok in tokens)
 
-def passes_core(text: str) -> bool:
+def passes_core_blob(text: str) -> bool:
     t = text.lower()
-    if any(x in t for x in EXC):
+    if any(x in t for x in EXC):    # hard negatives
         return False
-    return any(x in t for x in PSU_CORE)
+    # require PSU present somewhere + football context
+    return ("penn state" in t or "nittany lions" in t or "we are" in t) and (
+        "football" in t or any(k in t for k in PSU_CORE)
+    )
 
 def passes_core_title(title: str) -> bool:
-    return passes_core(title or "")
+    t = (title or "").lower()
+    if any(x in t for x in EXC): return False
+    return ("penn state" in t or "nittany lions" in t) and (
+        "football" in t or any(k in t for k in PSU_CORE)
+    )
 
 def norm_date(e) -> str:
     if getattr(e, "published_parsed", None):
         tm = e.published_parsed
         return f"{tm.tm_year:04d}-{tm.tm_mon:02d}-{tm.tm_mday:02d}"
     if getattr(e, "updated", None):
-        return e.updated.split("T")[0][:10]
+        return (e.updated or "").split("T")[0][:10]
     return ""
 
 def clean_html(s: str) -> str:
@@ -86,6 +95,7 @@ def harvest_text_fields(e, source_name: str) -> str:
         if isinstance(content, list):
             for c in content:
                 parts.append((c or {}).get("value") or "")
+        # include YouTube tags for better matching
         if "youtube" in source_name.lower():
             for tag in (e.get("tags") or []):
                 term = tag.get("term") if isinstance(tag, dict) else getattr(tag, "term", "")
@@ -95,10 +105,11 @@ def harvest_text_fields(e, source_name: str) -> str:
 def score_item(title: str, desc: str, source: str) -> int:
     t = (title or "").lower(); d = (desc or "").lower(); s = 0
     if "penn state" in t or "nittany lions" in t: s += 5
+    if "football" in t: s += 3
     s += sum(2 for k in PSU_CORE if k in t)
     s += sum(1 for k in PSU_CORE if k in d)
     if "gopsusports" in source.lower() or "penn state athletics" in source.lower(): s += 2
-    if "youtube" in source.lower(): s += 1
+    if "reddit" in source.lower(): s -= 1  # de-boost generic threads
     return s
 
 def youtube_peek_has_psu(link: str) -> bool:
@@ -106,7 +117,7 @@ def youtube_peek_has_psu(link: str) -> bool:
         r = requests.get(link, headers={"User-Agent": UA}, timeout=YT_PEEK_TIMEOUT)
         if r.status_code != 200: return False
         html = r.text.lower()
-        return any(tok in html for tok in PSU_CORE) and not any(x in html for x in EXC)
+        return passes_core_blob(html)
     except Exception:
         return False
 
@@ -134,12 +145,13 @@ def collect() -> List[Dict]:
             blob = harvest_text_fields(e, name)
             fulltext = f"{title} {blob}"
 
-            passes = passes_core(fulltext)
+            passes = passes_core_blob(fulltext)
 
-            # EXTRA strict for Reddit CFB: require PSU in the TITLE
+            # EXTRA strict for generic subreddits: require PSU in TITLE
             if "reddit – r/cfb" in lname:
                 passes = passes_core_title(title)
 
+            # For YouTube, allow a few lightweight HTML peeks if we didn't pass
             if not passes and "youtube" in lname and yt_peeks < YT_PEEK_MAX_PER_FEED:
                 yt_peeks += 1
                 if youtube_peek_has_psu(link):
