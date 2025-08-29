@@ -105,12 +105,11 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
     </main>
   </div>
 
-  <!-- Inline fight song playback (no redirect) -->
-  <audio id="fightAudio" preload="metadata" playsinline>
+  <!-- Inline fight song playback with range-friendly endpoint -->
+  <audio id="fightAudio" preload="metadata" playsinline webkit-playsinline>
     <source src="{{ fight_song_src }}" type="audio/mpeg">
   </audio>
 
-  <!-- Tiny toast for errors -->
   <div id="toast" style="display:none;position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.2);font-size:.9rem;z-index:9999"></div>
 
   <script>
@@ -137,12 +136,12 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
 
     const btn=document.getElementById('fightBtn');
     const audio=document.getElementById('fightAudio');
+    const toastEl=document.getElementById('toast');
 
     function toast(msg){
-      const t=document.getElementById('toast');
-      if(!t) return;
-      t.textContent=msg; t.style.display='';
-      setTimeout(()=>{t.style.display='none'}, 2800);
+      if(!toastEl) return;
+      toastEl.textContent=msg; toastEl.style.display='';
+      setTimeout(()=>{toastEl.style.display='none'}, 2600);
     }
 
     if(btn&&audio){
@@ -156,7 +155,6 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
       });
     }
 
-    // humanized "Updated" + light check for new items
     const stamp = document.getElementById('updatedStamp');
     function humanize(iso){
       if(!iso) return "never";
@@ -219,8 +217,9 @@ def quick_links():
     except Exception:
         return []
 
+# Use the new media route for fight song source
 def fight_song_src():
-    return url_for("static", filename="fight_song.mp3")
+    return url_for("fight_song_file")
 
 def items_last_modified_iso():
     p = BASE_DIR / "items.json"
@@ -292,3 +291,15 @@ def items_json():
     if p.exists():
         return send_file(p, mimetype="application/json", conditional=True)
     return jsonify({"items": []})
+
+# -------- MP3 with Range support (iOS-friendly) --------
+@app.get("/media/fight_song.mp3")
+def fight_song_file():
+    path = BASE_DIR / "static" / "fight_song.mp3"
+    if not path.exists():
+        return ("", 404)
+    # Werkzeug honors Range when conditional=True; we also advertise it.
+    resp = send_file(path, mimetype="audio/mpeg", conditional=True)
+    resp.headers["Accept-Ranges"] = "bytes"
+    resp.headers["Cache-Control"] = "public, max-age=604800"
+    return resp
