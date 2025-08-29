@@ -8,7 +8,7 @@ BASE_DIR = pathlib.Path(__file__).parent
 app = Flask(__name__, static_folder="static", template_folder="templates")
 
 # ===== Background refresher (runs collect.py every N minutes) =====
-REFRESH_MIN = int(os.getenv("FEED_REFRESH_MIN", "30"))  # change in Railway > Variables if desired
+REFRESH_MIN = int(os.getenv("FEED_REFRESH_MIN", "30"))
 _started_refresher = False
 
 def _run_collector_once():
@@ -25,7 +25,7 @@ def _run_collector_once():
         logging.exception("[refresher] collector error: %s", e)
 
 def _refresher_loop():
-    time.sleep(10)  # initial delay
+    time.sleep(10)
     while True:
         _run_collector_once()
         for _ in range(REFRESH_MIN * 60):
@@ -38,7 +38,7 @@ def _ensure_refresher():
         _started_refresher = True
         app.logger.info("[refresher] background refresher started (every %d min)", REFRESH_MIN)
 
-# ---------- Inline fallback (keeps site rendering even if template missing) ----------
+# ---------- Inline fallback template ----------
 INLINE_INDEX_TEMPLATE = """<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -105,9 +105,14 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
     </main>
   </div>
 
-  <audio id="fightAudio" preload="none">
+  <!-- Inline fight song playback (no redirect) -->
+  <audio id="fightAudio" preload="metadata" playsinline>
     <source src="{{ fight_song_src }}" type="audio/mpeg">
   </audio>
+
+  <!-- Tiny toast for errors -->
+  <div id="toast" style="display:none;position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:#111827;color:#fff;padding:10px 14px;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.2);font-size:.9rem;z-index:9999"></div>
+
   <script>
   (function(){
     const sel=document.getElementById('sourceFilter');
@@ -132,13 +137,21 @@ INLINE_INDEX_TEMPLATE = """<!doctype html>
 
     const btn=document.getElementById('fightBtn');
     const audio=document.getElementById('fightAudio');
+
+    function toast(msg){
+      const t=document.getElementById('toast');
+      if(!t) return;
+      t.textContent=msg; t.style.display='';
+      setTimeout(()=>{t.style.display='none'}, 2800);
+    }
+
     if(btn&&audio){
-      btn.addEventListener('click', async ()=>{
-        try{
-          if(audio.paused){ await audio.play(); btn.textContent='⏸︎ Pause'; }
-          else { audio.pause(); btn.textContent='▶︎ Fight Song'; }
-        }catch(e){
-          window.open('https://www.youtube.com/results?search_query=penn+state+fight+song','_blank');
+      btn.addEventListener('click', ()=>{
+        if(audio.paused){
+          audio.play().then(()=>{ btn.textContent='⏸︎ Pause'; })
+          .catch(()=>{ toast('Could not play audio. Check fight_song.mp3.'); });
+        }else{
+          audio.pause(); btn.textContent='▶︎ Fight Song';
         }
       });
     }
